@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>History — Full-Time</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/style.css">
+<style>
+  .hist-card { margin-bottom: 12px; }
+  .hist-head { display:flex; justify-content:space-between; align-items:center; cursor:pointer; gap:12px; flex-wrap:wrap; }
+  .hist-body { max-height:0; overflow:hidden; transition: max-height 0.35s ease; }
+  .hist-body.open { max-height: 3000px; }
+  .hist-body-inner { padding-top:16px; }
+  .grade-row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:10px; }
+  .grade-row input[type=text] { width:110px; }
+  .pick-grade { display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--line-soft); font-size:12.5px; }
+</style>
+</head>
+<body>
+<script src="/assets/app.js"></script>
+<script>
+injectShell("History", "Every prediction ever made, searchable and gradable");
+
+const content = document.getElementById("pageContent");
+content.innerHTML = `
+  <div class="card" style="margin-bottom:16px;">
+    <div class="grid grid-auto">
+      <div class="field" style="margin-bottom:0;"><label>Team</label><input type="text" id="fTeam" placeholder="Search team..."></div>
+      <div class="field" style="margin-bottom:0;"><label>Competition</label><input type="text" id="fComp" placeholder="Search competition..."></div>
+      <div class="field" style="margin-bottom:0;"><label>Created By</label><input type="text" id="fCreatedBy" placeholder="Search username..."></div>
+      <div class="field" style="margin-bottom:0;"><label>Status</label>
+        <select id="fStatus">
+          <option value="">All</option>
+          <option value="pending">Pending</option>
+          <option value="correct">Correct</option>
+          <option value="incorrect">Incorrect</option>
+        </select>
+      </div>
+      <div class="field" style="margin-bottom:0;"><label>Sort</label>
+        <select id="fSort">
+          <option value="newest">Newest first</option>
+          <option value="oldest">Oldest first</option>
+          <option value="confidence">Highest confidence</option>
+        </select>
+      </div>
+    </div>
+  </div>
+  <div class="text-sm muted" id="resultCount" style="margin-bottom:12px;"></div>
+  <div id="list"></div>
+`;
+
+let all = [];
+
+async function load() {
+  document.getElementById("list").innerHTML = `<div class="skeleton" style="height:80px; margin-bottom:12px;"></div>`.repeat(3);
+  try {
+    const params = new URLSearchParams();
+    const team = document.getElementById("fTeam").value.trim();
+    const comp = document.getElementById("fComp").value.trim();
+    const createdBy = document.getElementById("fCreatedBy").value.trim();
+    const status = document.getElementById("fStatus").value;
+    const sort = document.getElementById("fSort").value;
+    if (team) params.set("team", team);
+    if (comp) params.set("competition", comp);
+    if (createdBy) params.set("createdBy", createdBy);
+    if (status) params.set("status", status);
+    if (sort) params.set("sort", sort);
+    const res = await api(`/api/history?${params.toString()}`);
+    all = res.predictions;
+    document.getElementById("resultCount").textContent = `${res.count} prediction${res.count === 1 ? "" : "s"}`;
+    renderList();
+  } catch (err) {
+    document.getElementById("list").innerHTML = `<div class="empty-state">Failed to load history: ${escapeHTML(err.message)}</div>`;
+  }
+}
+
+function renderList() {
+  const el = document.getElementById("list");
+  if (!all.length) {
+    el.innerHTML = `<div class="empty-state">No predictions match these filters yet.</div>`;
+    return;
+  }
+  el.innerHTML = all.map(cardHTML).join("");
+  all.forEach((p) => {
+    document.getElementById(`head-${p.id}`).addEventListener("click", () => toggleCard(p.id));
+  });
+}
+
+function statusBadge(status) {
+  if (status === "correct") return `<span class="badge win">✓ Correct</span>`;
+  if (status === "incorrect") return `<span class="badge risk">✗ Incorrect</span>`;
+  return `<span class="badge">Pending</span>`;
+}
+
+/** Mirrors the server's DELETE /api/history/:id rule so the button isn't shown only to fail. */
+function canDelete(p) {
+  const user = currentUser();
+  if (!user) return false;
+  return user.role === "admin" || p.createdBy === user.username;
+}
+
+function cardHTML(p) {
+  const bp = p.consensus?.bestPick;
+  return `
+    <div class="card hist-card">
+      <div class="hist-head" id="head-${p.id}">
+        <div>
+          <div style="font-family:var(--font-display); font-size:15px;">${escapeHTML(p.fixture.home)} vs ${escapeHTML(p.fixture.away)}</div>
+          <div class="text-sm faint">${escapeHTML(p.fixture.league)} · ${escapeHTML(p.fixture.date)} · ${timeAgo(p.createdAt)}${p.createdBy ? ` · by <strong>${escapeHTML(p.createdBy)}</strong>` : ""}</div>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          ${bp?.available ? `<span class="badge gold">${bp.selection} (${bp.probability_pct}%)</span>` : ""}
+          <span class="badge teal">${fmtPct(p.consensus?.overallConfidence)} conf.</span>
+          ${statusBadge(p.feedback?.status)}
+        </div>
+      </div>
+      <div class="hist-body" id="body-${p.id}"><div class="hist-body-inner">${bodyHTML(p)}</div></div>
+    </div>
+  `;
+}
+
+function bodyHTML(p) {
+  const models = [
+    ["Poisson", p.poisson], ["Cohere", p.cohere], ["Gemini", p.gemini], ["Exa", p.exa],
+  ].filter(([, d]) => d);
+
+  const allPicks = [...(p.consensus?.highest_confidence||[]), ...(p.consensus?.medium_confidence||[]), ...(p.consensus?.higher_risk||[])];
+  const grades = p.feedback?.pickGrades || [];
+
+  return `
+    <hr class="hr" style="margin-top:0;">
+    <div class="grid grid-2">
+      <div>
+        <div class="section-title">Model Comparison</div>
+        <table>
+          <thead><tr><th>Model</th><th>Home</th><th>Draw</th><th>Away</th><th>Conf.</th></tr></thead>
+          <tbody>
+            ${models.map(([name, d]) => `
+              <tr><td>${name}</td><td>${fmtPct(d.home_win_prob)}</td><td>${fmtPct(d.draw_prob)}</td><td>${fmtPct(d.away_win_prob)}</td><td>${fmtPct(d.confidence)}</td></tr>
+            `).join("")}
+          </tbody>
+        </table>
+        <div class="text-sm faint" style="margin-top:10px;">${escapeHTML(p.consensus?.overall_summary || "")}</div>
+        ${p.diagnostics?.featureNotes?.length ? `<div class="text-sm faint" style="margin-top:8px;">Why: ${p.diagnostics.featureNotes.map(escapeHTML).join(" · ")}</div>` : ""}
+      </div>
+      <div>
+        <div class="section-title">All Picks &amp; Grades</div>
+        ${allPicks.length ? allPicks.map((pk) => {
+          const g = grades.find((x) => x.market === pk.market && x.selection === pk.selection);
+          const mark = !g || g.correct === null ? '<span class="faint">—</span>' : g.correct ? '<span style="color:var(--win)">✓</span>' : '<span style="color:var(--risk)">✗</span>';
+          return `<div class="pick-grade"><span>${pk.market}: <strong>${pk.selection}</strong> (${pk.probability_pct}%)</span>${mark}</div>`;
+        }).join("") : '<div class="text-sm faint">No picks recorded.</div>'}
+
+        <div class="section-title" style="margin-top:18px;">Feedback</div>
+        <div class="grade-row">
+          <input type="text" id="result-${p.id}" placeholder="e.g. 2-1" value="${escapeHTML(p.feedback?.actualResult || "")}">
+          <button class="btn sm" onclick="grade('${p.id}','correct')">Mark Correct</button>
+          <button class="btn sm danger" onclick="grade('${p.id}','incorrect')">Mark Incorrect</button>
+          ${canDelete(p) ? `<button class="btn sm icon-only" title="Delete this prediction" onclick="removeRecord('${p.id}')">${iconSvg('info')}</button>` : ""}
+        </div>
+        ${p.feedback?.gradedAt ? `<div class="text-sm faint" style="margin-top:6px;">Last graded ${timeAgo(p.feedback.gradedAt)}</div>` : ""}
+        <div style="margin-top:10px;">
+          <a class="btn sm" href="/analyze.html?id=${p.id}">Open Full Prediction →</a>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function toggleCard(id) {
+  document.getElementById(`body-${id}`).classList.toggle("open");
+}
+
+async function grade(id, status) {
+  const actualResult = document.getElementById(`result-${id}`).value.trim();
+  try {
+    await api(`/api/history/${id}/feedback`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status, actualResult }),
+    });
+    toast("Feedback saved — model weights recomputed", "success");
+    load();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+async function removeRecord(id) {
+  if (!confirm("Delete this prediction permanently? This cannot be undone.")) return;
+  try {
+    await api(`/api/history/${id}`, { method: "DELETE" });
+    toast("Prediction deleted", "success");
+    load();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+["fTeam","fComp","fCreatedBy","fStatus","fSort"].forEach((id) => {
+  document.getElementById(id).addEventListener("change", load);
+});
+document.getElementById("fTeam").addEventListener("input", debounce(load, 400));
+document.getElementById("fComp").addEventListener("input", debounce(load, 400));
+document.getElementById("fCreatedBy").addEventListener("input", debounce(load, 400));
+
+// currentUser() may still be null on first render if the auth check hasn't
+// resolved yet (injectShell's auth check is unawaited by design) — re-render
+// once it's ready so delete-button visibility (canDelete) is correct.
+window.addEventListener("authready", () => { if (all.length) renderList(); });
+
+load();
+</script>
+</body>
+</html>

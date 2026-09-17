@@ -1,0 +1,20 @@
+{
+  "name": "full-time-ai-predictor",
+  "version": "3.0.0",
+  "description": "Full-Time — AI football prediction platform. Four independent prediction voices (Cohere, Gemini, Exa, and a Poisson + Dixon-Coles statistical model) combined by a deterministic, self-learning consensus engine.",
+  "main": "server.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "mongodb": "^6.10.0"
+  }
+}

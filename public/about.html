@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>About the Engine — Full-Time</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/style.css">
+<style>
+  .pipeline-step { display:flex; gap:16px; padding: 16px 0; border-bottom: 1px solid var(--line-soft); }
+  .pipeline-step:last-child { border-bottom: none; }
+  .pipeline-num { font-family: var(--font-display); font-size: 22px; color: var(--gold); width: 34px; flex-shrink: 0; }
+</style>
+</head>
+<body>
+<script src="/assets/app.js"></script>
+<script>
+injectShell("About the Prediction Engine", "How Full-Time actually generates a prediction");
+
+const content = document.getElementById("pageContent");
+content.innerHTML = `
+  <div class="card animate-in" style="margin-bottom:20px;">
+    <p class="text-sm" style="line-height:1.8;">
+      Full-Time combines <strong>four independent prediction voices</strong> — three large language models
+      (Cohere, Gemini, and Exa) and one deterministic statistical model (Poisson + Dixon-Coles) —
+      into a single, mathematically weighted consensus. Three of the four reason from the exact same structured
+      dataset; Exa is the deliberate exception, doing its own live web search per fixture instead. No single AI
+      call ever decides the final answer; the Consensus Engine that combines them is plain arithmetic, not an AI,
+      so it's fully reproducible and auditable. Every model — AI or statistical — implements the exact same
+      provider interface (<code class="mono">predict()</code>, <code class="mono">healthCheck()</code>,
+      <code class="mono">validateResponse()</code>, <code class="mono">getModelInformation()</code>), so the
+      pipeline never special-cases any one of them, and a future model is a one-file addition.
+    </p>
+  </div>
+
+  <div class="section-title">The Pipeline</div>
+  <div class="card" style="margin-bottom:20px;">
+    ${pipelineStep(1, "Cache Check", "If this exact fixture (home, away, date, competition) has already been analyzed, the stored result returns instantly with zero API calls.")}
+    ${pipelineStep(2, "Retrieval", "Up to three concurrent web-search passes (via Exa) gather team form, head-to-head history, injuries, context, and — for club matches — corners, cards, shots on target, first-half goal splits, and each side's top scorer. A dedicated extraction model (Gemini) turns that free text into strict structured data — never inferring or inventing a number the source didn't state.")}
+    ${pipelineStep(3, "Multi-Stage Validation", "Every extracted field passes deterministic range and consistency checks (implausible values are nulled, never guessed at a 'corrected' number) before a weighted completeness score (0-100) is computed — fields that matter most to the prediction (scoring/conceding rates, form) count more than peripheral context. Below a configurable threshold, retrieval retries with broader queries; if it never clears the floor, the analysis is refused rather than proceeding on bad data. Source reliability is also scored per citation domain.")}
+    ${pipelineStep(4, "Feature Engineering", "Pure math, zero AI calls: recency-weighted form, form trend, attack/defence ratings, home advantage, momentum, goal volatility, injury and rest-day differentials, corner/card/shots expectations, first-half goal share, and a Poisson expected-goals baseline.")}
+    ${pipelineStep(5, "Three AI Voices + Poisson — In Parallel", "Cohere and Gemini each independently analyze the identical dataset under an identical, calibration-focused reasoning framework, anchored to the Poisson expected-goals baseline. Exa, uniquely, does its own live web search for the specific fixture instead — a genuinely internet-grounded perspective the other two structurally can't offer, without giving each of them inconsistent web access that would break the fairness of comparing their accuracy. All three run concurrently, and Poisson participates as a fourth, zero-cost, zero-latency voice. Every response is schema-validated and repaired before use. If any model fails, it's excluded — the analysis proceeds as long as at least one voice succeeds.")}
+    ${pipelineStep(6, "Auxiliary Markets", "Corners, cards, shots on target, half-time result, win-both/either-half, winning margin, and handicap are computed with the same rigorous Poisson-style math as goals — deterministically, from the collected stats — rather than asked of the AI models, since a language model has no real grounding to guess a corner count the way it can reason about goals.")}
+    ${pipelineStep(7, "Consensus Engine", "Deterministic, weighted averaging across every model that produced a result — and the weighting is MARKET-SPECIFIC: a model's learned influence on Match Winner can differ from its influence on Over/Under 2.5, based on where it's actually proven more accurate. Produces the Best Pick (always a real bookmaker line, never a trivial market like Over 0.5), Safe Picks, tiered pick lists, and an overall confidence score.")}
+    ${pipelineStep(8, "Diagnostics", "A deterministic 'why' explanation is generated from the same engineered features every model saw — which signals were strong, which model diverged most from the consensus, whether any retrieved fields needed repair. Not true ML feature-importance (this is an LLM ensemble, not a differentiable model) — a transparent, honest approximation instead.")}
+    ${pipelineStep(9, "Storage & Learning", "The full result is stored permanently. Once you grade it against the real scoreline, every model's per-market accuracy is recomputed, and BOTH its overall and market-specific weights are rebuilt from a full, recency-weighted replay of your entire graded history — so editing a past result is always safe.")}
+  </div>
+
+  <div class="grid grid-2" style="margin-bottom:20px;">
+    <div class="card">
+      <div class="section-title">The Four Voices</div>
+      <div class="kv-list">
+        <div class="kv-row"><span class="k">Cohere</span><span class="v">LLM prediction voice (v2 Chat API)</span></div>
+        <div class="kv-row"><span class="k">Gemini</span><span class="v">LLM prediction voice + retrieval extraction</span></div>
+        <div class="kv-row"><span class="k">Exa</span><span class="v">LLM prediction voice — live web search, no shared dataset</span></div>
+        <div class="kv-row"><span class="k">Poisson + Dixon-Coles</span><span class="v">Statistical model, no AI</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="section-title">What Makes This Different</div>
+      <ul class="text-sm" style="line-height:2; padding-left:18px;">
+        <li>The final decision is deterministic math, not an LLM freeforming a summary.</li>
+        <li>Weights are learned PER MARKET, not just overall — a model can be trusted more for BTTS than for Over/Under.</li>
+        <li>Confidence is calibration-checked via Brier score, not just self-reported.</li>
+        <li>Multi-stage validation repairs or nulls implausible data before it ever reaches a model.</li>
+        <li>Any model can fail without breaking the analysis.</li>
+        <li>Best Pick is always a real bookmaker line with genuine cross-model agreement — never a trivial market, never a contested one.</li>
+        <li>Corners, cards, shots, and handicap markets use real math instead of an LLM's best guess at a count it has no grounding for.</li>
+        <li>Every number is traceable back to a specific formula, provider call, or diagnostic note.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="card" style="border-left:3px solid var(--gold);">
+    <div class="text-sm muted" style="line-height:1.7;">
+      <strong style="color:var(--gold);">Honesty note:</strong> this system reflects patterns in historical and
+      recently retrieved data, filtered through statistical and language models. It is not financial advice and
+      carries no guarantee of accuracy. Football is genuinely unpredictable — treat every output, however confident,
+      as one structured opinion among many, not a certainty.
+    </div>
+  </div>
+`;
+
+function pipelineStep(n, title, desc) {
+  return `
+    <div class="pipeline-step">
+      <div class="pipeline-num">${String(n).padStart(2,"0")}</div>
+      <div>
+        <div style="font-family:var(--font-display); font-size:15px; margin-bottom:4px;">${title}</div>
+        <div class="text-sm muted" style="line-height:1.7;">${desc}</div>
+      </div>
+    </div>
+  `;
+}
+</script>
+</body>
+</html>

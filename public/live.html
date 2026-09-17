@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Live Matches — Full-Time</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<script src="/assets/app.js"></script>
+<script>
+injectShell("Live Matches", "Fixtures you're currently tracking, awaiting a final result");
+
+const content = document.getElementById("pageContent");
+content.innerHTML = `
+  <div class="card animate-in" style="margin-bottom:16px; border-left:3px solid var(--teal);">
+    <div class="text-sm muted" style="line-height:1.6;">
+      <strong style="color:var(--teal);">What this page shows:</strong> Full-Time doesn't connect to a live odds or live-score
+      feed. This page lists every prediction you've run that hasn't been graded yet — i.e. fixtures you're actively
+      tracking and plan to mark correct/incorrect once the match finishes. Grade a result from here or from History.
+    </div>
+  </div>
+
+  <div class="grid grid-3" style="margin-bottom:16px;" id="liveStats"></div>
+
+  <div id="liveList"></div>
+`;
+
+async function load() {
+  document.getElementById("liveList").innerHTML = `<div class="skeleton" style="height:70px;margin-bottom:12px;"></div>`.repeat(3);
+  try {
+    const res = await api("/api/history?status=pending&sort=newest");
+    renderStats(res.predictions);
+    renderList(res.predictions);
+  } catch (err) {
+    document.getElementById("liveList").innerHTML = `<div class="empty-state">Couldn't load: ${escapeHTML(err.message)}</div>`;
+  }
+}
+
+function renderStats(list) {
+  const el = document.getElementById("liveStats");
+  const avgConf = list.length ? Math.round(list.reduce((s,p)=>s+(p.consensus?.overallConfidence||0),0)/list.length) : null;
+  el.innerHTML = `
+    <div class="card stat-card"><div class="stat-label">Tracked Fixtures</div><div class="stat-value gold">${list.length}</div></div>
+    <div class="card stat-card"><div class="stat-label">Avg. Confidence</div><div class="stat-value">${fmtPct(avgConf)}</div></div>
+    <div class="card stat-card"><div class="stat-label">Competitions</div><div class="stat-value teal">${new Set(list.map(p=>p.fixture.league)).size}</div></div>
+  `;
+}
+
+function renderList(list) {
+  const el = document.getElementById("liveList");
+  if (!list.length) {
+    el.innerHTML = `<div class="empty-state">
+      <div style="font-family:var(--font-display); font-size:16px; margin-bottom:6px;">Nothing tracked right now</div>
+      <div class="text-sm">Run a new analysis and it'll show up here until you grade the result.</div>
+      <a class="btn primary" style="margin-top:16px;" href="/analyze.html">Run Match Analysis</a>
+    </div>`;
+    return;
+  }
+  el.innerHTML = list.map((p) => {
+    const bp = p.consensus?.bestPick;
+    return `
+    <div class="card" style="margin-bottom:12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+      <div>
+        <div style="font-family:var(--font-display); font-size:15px;">${escapeHTML(p.fixture.home)} vs ${escapeHTML(p.fixture.away)}</div>
+        <div class="text-sm faint">${escapeHTML(p.fixture.league)} · ${escapeHTML(p.fixture.date)} · analyzed ${timeAgo(p.createdAt)}</div>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        ${bp?.available ? `<span class="badge gold">${bp.selection} · ${bp.probability_pct}%</span>` : ""}
+        <span class="badge teal">${fmtPct(p.consensus?.overallConfidence)} conf.</span>
+        <a class="btn sm" href="/history.html">Grade →</a>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+load();
+</script>
+</body>
+</html>

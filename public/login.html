@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Log In — Full-Time</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/style.css">
+<style>
+  .login-wrap {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  .login-card { width: 100%; max-width: 380px; }
+  .login-brand { display: flex; align-items: center; gap: 10px; margin-bottom: 24px; justify-content: center; }
+  .login-brand .brand-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 12px var(--gold-glow); }
+  .login-brand-name { font-family: var(--font-display); font-size: 20px; letter-spacing: 0.5px; }
+  .login-error { color: var(--risk); font-size: 12.5px; margin-top: 4px; min-height: 16px; }
+</style>
+</head>
+<body>
+<div class="login-wrap">
+  <div class="login-card">
+    <div class="login-brand">
+      <div class="brand-dot"></div>
+      <div class="login-brand-name">Full-Time</div>
+    </div>
+    <div class="card animate-in">
+      <div class="section-title" style="margin-top:0;">Log In</div>
+      <form id="loginForm">
+        <div class="field">
+          <label>Username</label>
+          <input type="text" id="username" autocomplete="username" required>
+        </div>
+        <div class="field">
+          <label>Password</label>
+          <input type="password" id="password" autocomplete="current-password" required>
+        </div>
+        <div class="login-error" id="loginError"></div>
+        <button type="submit" class="btn primary" style="width:100%;" id="loginBtn">Log In</button>
+      </form>
+    </div>
+  </div>
+</div>
+<div class="toast-stack" id="toastStack"></div>
+<script src="/assets/app.js"></script>
+<script>
+const params = new URLSearchParams(location.search);
+const next = params.get("next") || "/dashboard.html";
+
+// Already logged in? Skip straight past the login form.
+(async () => {
+  try {
+    await api("/api/auth/me");
+    location.replace(next);
+  } catch {
+    // not logged in — show the form as normal
+  }
+})();
+
+document.getElementById("loginForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const username = document.getElementById("username").value.trim();
+  const password = document.getElementById("password").value;
+  const errorEl = document.getElementById("loginError");
+  const btn = document.getElementById("loginBtn");
+  errorEl.textContent = "";
+  btn.disabled = true;
+  btn.textContent = "Logging in…";
+  try {
+    await api("/api/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    location.replace(next);
+  } catch (err) {
+    errorEl.textContent = err.message || "Login failed.";
+    btn.disabled = false;
+    btn.textContent = "Log In";
+  }
+});
+</script>
+</body>
+</html>

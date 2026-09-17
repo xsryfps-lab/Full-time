@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Statistics — Full-Time</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<script src="/assets/app.js"></script>
+<script>
+injectShell("Statistics", "Market-level and system-wide performance breakdowns");
+
+const content = document.getElementById("pageContent");
+content.innerHTML = `
+  <div class="grid grid-2" style="margin-bottom:16px;">
+    <div>
+      <div class="section-title">Confidence Over Time</div>
+      <div class="card" id="confChart"><div class="skeleton" style="height:200px;"></div></div>
+    </div>
+    <div>
+      <div class="section-title">Model Agreement Over Time</div>
+      <div class="card" id="agreeChart"><div class="skeleton" style="height:200px;"></div></div>
+    </div>
+  </div>
+
+  <div class="section-title">Accuracy By Market (All Models Combined)</div>
+  <div class="card" id="marketTable" style="margin-bottom:16px;"><div class="skeleton" style="height:180px;"></div></div>
+
+  <div class="section-title">Accuracy By Competition</div>
+  <div class="card" id="accByCompTable" style="margin-bottom:16px;"><div class="skeleton" style="height:180px;"></div></div>
+
+  <div class="section-title">Top Competitions By Volume</div>
+  <div class="card" id="compTable"><div class="skeleton" style="height:180px;"></div></div>
+`;
+
+async function load() {
+  try {
+    const [dash, dbInfo, models] = await Promise.all([
+      api("/api/dashboard"),
+      api("/api/database/info"),
+      Promise.all(["cohere","gemini","exa","poisson"].map((m) => api(`/api/model-stats/${m}`).catch(() => null))),
+    ]);
+
+    renderLineChart(document.getElementById("confChart"), dash.confidenceTimeline.map(d => ({value: d.value})), { color: "#e8b34d" });
+    renderLineChart(document.getElementById("agreeChart"), dash.agreementTimeline.map(d => ({value: d.value})), { color: "#34d1b6" });
+
+    renderMarketTable(models.filter(Boolean));
+    renderCompTable(dbInfo.topCompetitions);
+    renderAccByComp(dash.accuracyByCompetition);
+  } catch (err) {
+    content.innerHTML = `<div class="empty-state">Failed to load statistics: ${escapeHTML(err.message)}</div>`;
+  }
+}
+
+function renderMarketTable(models) {
+  const marketTotals = {};
+  models.forEach((m) => {
+    Object.entries(m.byMarket || {}).forEach(([market, info]) => {
+      if (!marketTotals[market]) marketTotals[market] = { correct: 0, total: 0 };
+      marketTotals[market].total += info.count;
+      marketTotals[market].correct += Math.round((info.accuracy / 100) * info.count);
+    });
+  });
+  const rows = Object.entries(marketTotals);
+  const el = document.getElementById("marketTable");
+  if (!rows.length) { el.innerHTML = `<div class="empty-state">No graded predictions yet.</div>`; return; }
+  el.innerHTML = `
+    <table>
+      <thead><tr><th>Market</th><th>Graded Instances</th><th>Accuracy</th></tr></thead>
+      <tbody>
+        ${rows.sort((a,b) => b[1].total - a[1].total).map(([market, t]) => `
+          <tr><td>${market}</td><td class="mono">${t.total}</td><td>${fmtPct(Math.round((t.correct/t.total)*100))}</td></tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function renderAccByComp(list) {
+  const el = document.getElementById("accByCompTable");
+  if (!list || !list.length) { el.innerHTML = `<div class="empty-state">Need at least 2 graded predictions in a competition to show this.</div>`; return; }
+  el.innerHTML = `
+    <table>
+      <thead><tr><th>Competition</th><th>Graded</th><th>Accuracy</th></tr></thead>
+      <tbody>${list.map(c => `<tr><td>${escapeHTML(c.league)}</td><td class="mono">${c.count}</td><td>${fmtPct(c.accuracy)}</td></tr>`).join("")}</tbody>
+    </table>
+  `;
+}
+
+function renderCompTable(comps) {
+  const el = document.getElementById("compTable");
+  if (!comps.length) { el.innerHTML = `<div class="empty-state">No predictions yet.</div>`; return; }
+  el.innerHTML = `
+    <table>
+      <thead><tr><th>Competition</th><th>Predictions</th></tr></thead>
+      <tbody>${comps.map(c => `<tr><td>${escapeHTML(c.league)}</td><td class="mono">${c.count}</td></tr>`).join("")}</tbody>
+    </table>
+  `;
+}
+
+load();
+</script>
+</body>
+</html>

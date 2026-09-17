@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>System Health — Full-Time</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<script src="/assets/app.js"></script>
+<script>
+injectShell("System Health", "Live server, provider, and performance status");
+
+const content = document.getElementById("pageContent");
+content.innerHTML = `<div class="skeleton" style="height:400px;"></div>`;
+
+const PROVIDER_INFO = {
+  Exa: "Retrieval engine (required) AND an independent, internet-grounded prediction voice — the only one with live web access.",
+  Cohere: "Prediction voice — Command-A via Cohere's v2 Chat API, free trial key.",
+  Gemini: "Extraction model + prediction voice (required).",
+  Poisson: "Statistical model — always available, no API key needed.",
+};
+
+let lastLiveCheck = null;
+
+async function load() {
+  try {
+    const [health, apiHealth, metricsData] = await Promise.all([
+      api("/api/system/health"), api("/api/health"), api("/api/system/metrics"),
+    ]);
+    _apiHealthCache = apiHealth;
+    render(health, apiHealth, metricsData);
+  } catch (err) {
+    content.innerHTML = `<div class="empty-state">Backend unreachable: ${escapeHTML(err.message)}</div>`;
+  }
+}
+
+function render(h, apiHealth, m) {
+  content.innerHTML = `
+    <div class="grid grid-auto animate-in" style="margin-bottom:16px;">
+      <div class="card stat-card"><div class="stat-label">Status</div><div class="stat-value ${h.allProvidersConfigured ? 'teal' : 'gold'}">${h.allProvidersConfigured ? "Healthy" : "Needs Setup"}</div></div>
+      <div class="card stat-card"><div class="stat-label">MongoDB</div><div class="stat-value ${h.mongo?.ok ? 'teal' : 'risk'}" style="${h.mongo?.ok ? '' : 'color:var(--risk);'}">${h.mongo?.ok ? "Connected" : "Disconnected"}</div></div>
+      <div class="card stat-card"><div class="stat-label">Uptime</div><div class="stat-value">${formatUptime(h.uptimeSeconds)}</div></div>
+      <div class="card stat-card"><div class="stat-label">Node.js</div><div class="stat-value" style="font-size:20px;">${h.nodeVersion}</div></div>
+      <div class="card stat-card"><div class="stat-label">Memory (RSS)</div><div class="stat-value" style="font-size:20px;">${h.memory.rssMb} MB</div></div>
+    </div>
+    ${!h.mongo?.ok ? `<div class="card" style="margin-bottom:16px; border-left:3px solid var(--risk);"><div class="text-sm" style="color:var(--risk);">MongoDB is not connected: ${escapeHTML(h.mongo?.error || "unknown error")}. Predictions, accounts, and settings cannot be read or saved until this is fixed — check MONGODB_URI in your environment.</div></div>` : ""}
+
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+      <div class="section-title" style="margin-bottom:0; flex:1;">API Providers</div>
+      <button class="btn sm" id="liveCheckBtn">Run Live Health Check</button>
+    </div>
+    <div class="card" style="margin-bottom:16px;">
+      <table>
+        <thead><tr><th>Provider</th><th>Role</th><th>Status</th><th>Model</th><th>Latency</th></tr></thead>
+        <tbody id="providerRows">
+          ${Object.entries(h.providers).map(([name, status]) => providerRow(name, status)).join("")}
+        </tbody>
+      </table>
+      <div class="text-sm faint" id="liveCheckNote" style="margin-top:10px;">Status shown is configuration-only. Click "Run Live Health Check" to actually ping each provider and measure real latency.</div>
+    </div>
+
+    <div class="section-title">Performance Monitoring</div>
+    <div class="grid grid-2" style="margin-bottom:16px;">
+      <div class="card">
+        <div class="text-sm faint" style="margin-bottom:10px;">Per-Provider API Calls</div>
+        ${Object.keys(m.providers).length ? `
+        <table>
+          <thead><tr><th>Provider</th><th>Calls</th><th>Success Rate</th><th>Avg Latency</th><th>JSON Fails</th></tr></thead>
+          <tbody>${Object.entries(m.providers).map(([name, p]) => `
+            <tr><td>${name}</td><td class="mono">${p.calls}</td><td>${fmtPct(p.successRate)}</td><td class="mono">${p.avgLatencyMs ?? "—"}ms</td><td class="mono">${p.jsonParseFailures}</td></tr>
+          `).join("")}</tbody>
+        </table>` : `<div class="empty-state text-sm">No API calls made yet — run an analysis to populate this.</div>`}
+      </div>
+      <div class="card kv-list">
+        <div class="kv-row"><span class="k">Retrieval success rate</span><span class="v">${fmtPct(m.retrieval.successRate)}</span></div>
+        <div class="kv-row"><span class="k">Retrieval attempts</span><span class="v">${m.retrieval.attempts}</span></div>
+        <div class="kv-row"><span class="k">Retrieval retries</span><span class="v">${m.retrieval.retries}</span></div>
+        <div class="kv-row"><span class="k">Retrieval rejections</span><span class="v">${m.retrieval.rejections}</span></div>
+        <div class="kv-row"><span class="k">Consensus runs</span><span class="v">${m.consensus.runs}</span></div>
+        <div class="kv-row"><span class="k">All-models-failed events</span><span class="v">${m.consensus.allModelsFailed}</span></div>
+        <div class="kv-row"><span class="k">Avg. pipeline duration</span><span class="v">${m.pipeline.avgDurationMs ?? "—"} ms</span></div>
+        <div class="kv-row"><span class="k">Pipeline failure rate</span><span class="v">${fmtPct(m.pipeline.failureRate)}</span></div>
+      </div>
+    </div>
+
+    <div class="grid grid-2">
+      <div>
+        <div class="section-title">System</div>
+        <div class="card kv-list">
+          <div class="kv-row"><span class="k">Platform</span><span class="v">${h.platform}</span></div>
+          <div class="kv-row"><span class="k">Free system memory</span><span class="v">${h.memory.freeSystemMb} MB</span></div>
+          <div class="kv-row"><span class="k">Total system memory</span><span class="v">${h.memory.totalSystemMb} MB</span></div>
+          <div class="kv-row"><span class="k">Database records</span><span class="v">${h.database.recordCount}</span></div>
+        </div>
+      </div>
+      <div>
+        <div class="section-title">Active Settings Snapshot</div>
+        <div class="card kv-list">
+          ${Object.entries(h.settings).map(([k,v]) => `<div class="kv-row"><span class="k">${k}</span><span class="v">${v}</span></div>`).join("")}
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.getElementById("liveCheckBtn").addEventListener("click", runLiveCheck);
+}
+
+function providerRow(name, status) {
+  const s = lastLiveCheck?.[name] || status;
+  const statusBadge = !s.configured
+    ? '<span class="badge risk">Missing key</span>'
+    : s.ok
+      ? '<span class="badge win">Configured</span>'
+      : `<span class="badge risk" title="${escapeHTML(s.error||'')}">Error</span>`;
+  return `
+    <tr>
+      <td><strong>${name}</strong></td>
+      <td class="text-sm faint">${PROVIDER_INFO[name] || ""}</td>
+      <td>${statusBadge}</td>
+      <td class="mono text-sm">${modelForProvider(name)}</td>
+      <td class="mono text-sm">${s.latencyMs != null ? s.latencyMs + "ms" : "—"}</td>
+    </tr>
+  `;
+}
+
+let _apiHealthCache = null;
+function modelForProvider(name) {
+  return _apiHealthCache?.models?.[name.toLowerCase()]?.model || "—";
+}
+
+async function runLiveCheck() {
+  const btn = document.getElementById("liveCheckBtn");
+  btn.disabled = true;
+  btn.textContent = "Pinging providers…";
+  try {
+    const res = await api("/api/system/healthcheck", { method: "POST" });
+    lastLiveCheck = res.results;
+    document.getElementById("liveCheckNote").textContent = `Live check completed at ${new Date(res.checkedAt).toLocaleTimeString()}.`;
+    load();
+    toast("Live health check complete", "success");
+  } catch (err) {
+    toast(err.message, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Run Live Health Check";
+  }
+}
+
+function formatUptime(sec) {
+  if (sec < 60) return sec + "s";
+  const m = Math.floor(sec / 60);
+  if (m < 60) return m + "m";
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
+load();
+setInterval(load, 20000);
+</script>
+</body>
+</html>

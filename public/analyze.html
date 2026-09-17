@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Match Analysis — Full-Time</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/style.css">
+<style>
+  .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 700px) { .form-row { grid-template-columns: 1fr; } }
+  .autocomplete-wrap { position: relative; }
+  .autocomplete-list {
+    position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 20;
+    background: var(--bg-elev-2); border: 1px solid var(--line); border-radius: var(--radius-sm);
+    max-height: 180px; overflow-y: auto; display: none; box-shadow: var(--shadow-lift);
+  }
+  .autocomplete-list.show { display: block; }
+  .autocomplete-list div { padding: 8px 12px; font-size: 13px; cursor: pointer; }
+  .autocomplete-list div:hover { background: var(--bg-elev-3); color: var(--gold); }
+  .prob-bar-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+  .prob-bar-row .lbl { width: 90px; font-size: 12.5px; color: var(--text-dim); flex-shrink: 0; }
+  .prob-bar-track { flex: 1; height: 20px; background: var(--bg-elev-2); border-radius: 5px; overflow: hidden; position: relative; }
+  .prob-bar-fill { height: 100%; background: linear-gradient(90deg, var(--gold-dim), var(--gold)); border-radius: 5px; transition: width 0.8s cubic-bezier(.3,1,.4,1); }
+  .prob-bar-val { width: 52px; text-align: right; font-family: var(--font-mono); font-size: 12.5px; }
+  .model-tab-content { display: none; }
+  .model-tab-content.active { display: block; }
+  .score-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(90px,1fr)); gap: 10px; }
+  .score-cell { text-align: center; padding: 10px 6px; background: var(--bg-elev-2); border-radius: var(--radius-sm); border: 1px solid var(--line); }
+  .score-cell .sc { font-family: var(--font-display); font-size: 18px; }
+  .score-cell .pc { font-family: var(--font-mono); font-size: 11px; color: var(--teal); margin-top: 2px; }
+</style>
+</head>
+<body>
+<script src="/assets/app.js"></script>
+<script>
+injectShell("Match Analysis", "Run a new AI + statistical prediction, or view results");
+
+const content = document.getElementById("pageContent");
+content.innerHTML = `
+  <div class="card animate-in" id="formCard">
+    <div class="section-title">Fixture</div>
+    <form id="fixtureForm">
+      <div class="form-row">
+        <div class="field autocomplete-wrap">
+          <label>Home Team</label>
+          <input type="text" id="homeInput" placeholder="e.g. Arsenal" required autocomplete="off">
+          <div class="autocomplete-list" id="homeSuggestions"></div>
+        </div>
+        <div class="field autocomplete-wrap">
+          <label>Away Team</label>
+          <input type="text" id="awayInput" placeholder="e.g. Chelsea" required autocomplete="off">
+          <div class="autocomplete-list" id="awaySuggestions"></div>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="field autocomplete-wrap">
+          <label>Competition</label>
+          <input type="text" id="leagueInput" placeholder="e.g. Premier League" autocomplete="off">
+          <div class="autocomplete-list" id="leagueSuggestions"></div>
+        </div>
+        <div class="field">
+          <label>Date</label>
+          <input type="text" id="dateInput" placeholder="e.g. 2026-08-10">
+        </div>
+      </div>
+      <div style="display:flex; gap:10px; align-items:center; margin-top:6px;">
+        <button type="submit" class="btn primary" id="runBtn">Run Analysis</button>
+        <label class="toggle text-sm muted">
+          <input type="checkbox" id="forceRefresh">
+          <span class="toggle-track"></span>
+          Force refresh (bypass cache)
+        </label>
+      </div>
+    </form>
+  </div>
+
+  <div class="card" id="tickerCard" style="margin-top:16px; display:none;">
+    <div class="section-title">Live Progress</div>
+    <div class="ticker" id="ticker"></div>
+  </div>
+
+  <div id="resultsRoot" style="margin-top:16px;"></div>
+`;
+
+const STEPS = [
+  { key: "research", label: "Retrieving information (Exa search, up to 3 passes, then Gemini extraction)" },
+  { key: "validation", label: "Validating completeness" },
+  { key: "features", label: "Building engineered features" },
+  { key: "poissonmodel", label: "Running Poisson statistical model" },
+  { key: "coheremodel", label: "Running Cohere" },
+  { key: "geminimodel", label: "Running Gemini" },
+  { key: "examodel", label: "Running Exa (live web search)" },
+  { key: "consensus", label: "Building consensus & calculating confidence" },
+  { key: "diagnostics", label: "Analyzing prediction diagnostics" },
+  { key: "saving", label: "Saving prediction" },
+];
+
+function renderTicker(states, details) {
+  const ticker = document.getElementById("ticker");
+  ticker.innerHTML = STEPS.map((s) => {
+    const state = states[s.key] || "pending";
+    let icon = `<div class="skeleton" style="width:14px;height:14px;border-radius:50%;"></div>`;
+    if (state === "active") icon = `<div class="spin"></div>`;
+    if (state === "done" || state === "hit") icon = iconSvg("target", 'style="color:var(--win)"');
+    if (state === "failed") icon = iconSvg("info", 'style="color:var(--risk)"');
+    const detail = state === "failed" && details?.[s.key]
+      ? `<div class="text-sm" style="color:var(--risk); margin-top:2px; opacity:0.85;">${escapeHTML(details[s.key])}</div>`
+      : "";
+    return `<div class="ticker-step ${state}"><div class="ticker-icon">${icon}</div><div><div>${s.label}</div>${detail}</div></div>`;
+  }).join("");
+}
+
+// Smart, typo-tolerant, alias-aware autocomplete for team and competition
+// fields — backed by the server (seed directory + this user's own history),
+// not just a client-side filter of previously-seen values.
+function wireSmartAutocomplete(inputId, boxId, endpoint) {
+  const input = document.getElementById(inputId);
+  const box = document.getElementById(boxId);
+  const run = debounce(async () => {
+    const q = input.value.trim();
+    if (!q) { box.classList.remove("show"); return; }
+    try {
+      const res = await api(`${endpoint}?q=${encodeURIComponent(q)}`);
+      const matches = res.results || [];
+      if (!matches.length) { box.classList.remove("show"); return; }
+      box.innerHTML = matches.map((m) => `<div>${escapeHTML(m)}</div>`).join("");
+      box.classList.add("show");
+      [...box.children].forEach((el, i) => el.addEventListener("click", () => {
+        input.value = matches[i];
+        box.classList.remove("show");
+      }));
+    } catch { box.classList.remove("show"); }
+  }, 200);
+  input.addEventListener("input", run);
+  input.addEventListener("focus", run);
+}
+wireSmartAutocomplete("homeInput", "homeSuggestions", "/api/teams/search");
+wireSmartAutocomplete("awayInput", "awaySuggestions", "/api/teams/search");
+wireSmartAutocomplete("leagueInput", "leagueSuggestions", "/api/competitions/search");
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".autocomplete-wrap")) {
+    document.querySelectorAll(".autocomplete-list").forEach((b) => b.classList.remove("show"));
+  }
+});
+
+// Persist form state across navigation. Date defaults to today on first
+// visit (no saved value yet), but a manual override sticks via the same
+// sessionStorage mechanism as every other field.
+["homeInput", "awayInput", "leagueInput", "dateInput"].forEach((id) => {
+  const el = document.getElementById(id);
+  const saved = sessionStorage.getItem("ft_" + id);
+  if (saved) el.value = saved;
+  else if (id === "dateInput") el.value = new Date().toISOString().slice(0, 10);
+  el.addEventListener("input", () => sessionStorage.setItem("ft_" + id, el.value));
+});
+
+const form = document.getElementById("fixtureForm");
+const runBtn = document.getElementById("runBtn");
+const tickerCard = document.getElementById("tickerCard");
+const resultsRoot = document.getElementById("resultsRoot");
+
+form.addEventListener("submit", (e) => {
+  e.preventDefault();
+  runAnalysis();
+});
+
+function runAnalysis() {
+  const home = document.getElementById("homeInput").value.trim();
+  const away = document.getElementById("awayInput").value.trim();
+  const league = document.getElementById("leagueInput").value.trim();
+  const date = document.getElementById("dateInput").value.trim();
+  const force = document.getElementById("forceRefresh").checked;
+  if (!home || !away) { toast("Home and away team are required", "error"); return; }
+
+  runBtn.disabled = true;
+  runBtn.textContent = "Analyzing…";
+  tickerCard.style.display = "block";
+  resultsRoot.innerHTML = "";
+  const states = {};
+  const details = {};
+  renderTicker(states, details);
+
+  const params = new URLSearchParams({ home, away, league, date });
+  if (force) params.set("force", "true");
+  const es = new EventSource(`/api/analyze/stream?${params.toString()}`);
+
+  es.addEventListener("cached", () => {
+    states.research = states.validation = states.features = states.poissonmodel = "done";
+    ["coheremodel","geminimodel","examodel","consensus","diagnostics","saving"].forEach((k) => states[k] = "done");
+    renderTicker(states, details);
+    toast("Served from cache — zero API calls used", "success");
+  });
+
+  es.addEventListener("step", (e) => {
+    const { key, state, detail } = JSON.parse(e.data);
+    states[key] = state;
+    if (detail) details[key] = detail;
+    renderTicker(states, details);
+  });
+
+  es.addEventListener("result", (e) => {
+    const data = JSON.parse(e.data);
+    renderResults(data);
+    runBtn.disabled = false;
+    runBtn.textContent = "Run Analysis";
+    es.close();
+    toast(data._cached ? "Loaded from cache" : "Analysis complete", "success");
+  });
+
+  es.addEventListener("error", (e) => {
+    let message = "Analysis failed — connection error.";
+    try { message = JSON.parse(e.data).message || message; } catch {}
+    toast(message, "error");
+    runBtn.disabled = false;
+    runBtn.textContent = "Run Analysis";
+    es.close();
+  });
+}
+
+function renderResults(data) {
+  const c = data.consensus;
+  const f = data.engineeredFeatures || {};
+  const modelBlocks = [
+    { key: "poisson", label: "Poisson (statistical)", data: data.poisson },
+    { key: "cohere", label: "Cohere", data: data.cohere },
+    { key: "gemini", label: "Gemini", data: data.gemini },
+    { key: "exa", label: "Exa (live web search)", data: data.exa },
+  ];
+
+  resultsRoot.innerHTML = `
+    <div class="card animate-in" style="margin-bottom:16px;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:10px;">
+        <div>
+          <div class="eyebrow">${data._cached ? "From cache" : "Fresh analysis"}</div>
+          <h2 style="font-size:22px; margin-top:4px;">${escapeHTML(data.fixture.home)} vs ${escapeHTML(data.fixture.away)}</h2>
+          <div class="text-sm muted" style="margin-top:2px;">${escapeHTML(data.fixture.league)} · ${escapeHTML(data.fixture.date)}</div>
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <span class="badge">${data.retrievalMeta.matchType === "international" ? "International" : "Club"}</span>
+          <span class="badge teal">${data.retrievalMeta.completeness}% data quality</span>
+          <span class="badge gold">${c.modelCount} model${c.modelCount === 1 ? "" : "s"} voted</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid" style="grid-template-columns: 0.9fr 1.3fr 1fr; margin-bottom:16px;">
+      <div class="card" style="display:flex; flex-direction:column; align-items:center; justify-content:center;">
+        <div id="confDial"></div>
+      </div>
+      <div class="card">
+        <div class="section-title">Best Pick</div>
+        <div class="text-sm faint" style="margin-bottom:8px; margin-top:-8px;">Chosen only from standard betting lines — Match Winner, Double Chance, BTTS, Over/Under, Corners, Cards, Handicap, and more. Never a trivial market like Over 0.5.</div>
+        ${bestPickBlock(c.bestPick)}
+      </div>
+      <div class="card">
+        <div class="section-title">Agreement &amp; Quality</div>
+        <div class="kv-list">
+          <div class="kv-row"><span class="k">Model agreement</span><span class="v">${fmtPct(c.agreementScore)}</span></div>
+          <div class="kv-row"><span class="k">Data quality</span><span class="v">${fmtPct(c.dataQualityScore)}</span></div>
+          <div class="kv-row"><span class="k">Retrieval attempts</span><span class="v">${data.retrievalMeta.attempts}</span></div>
+          <div class="kv-row"><span class="k">Models excluded</span><span class="v">${data.retrievalMeta.modelFailures?.length || 0}</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;">
+      <div class="section-title">Prediction Summary</div>
+      <p class="text-sm" style="line-height:1.7;">${escapeHTML(c.overall_summary)}</p>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;">
+      <div class="section-title">Why This Prediction — Diagnostics</div>
+      ${diagnosticsBlock(data.diagnostics)}
+    </div>
+
+    <div class="grid grid-2" style="margin-bottom:16px;">
+      <div class="card">
+        <div class="section-title">Match Winner</div>
+        ${probBar("Home Win", c.finalProbabilities.home_win_prob)}
+        ${probBar("Draw", c.finalProbabilities.draw_prob)}
+        ${probBar("Away Win", c.finalProbabilities.away_win_prob)}
+        <hr class="hr">
+        <div class="text-sm faint">Double Chance (weighted consensus)</div>
+        ${doubleChanceRow(c)}
+      </div>
+      <div class="card">
+        <div class="section-title">Goals Markets</div>
+        ${probBar("BTTS: Yes", c.finalProbabilities.btts_prob)}
+        ${probBar("Over 0.5", c.finalProbabilities.over_0_5_prob)}
+        ${probBar("Over 1.5", c.finalProbabilities.over_1_5_prob)}
+        ${probBar("Over 2.5", c.finalProbabilities.over_2_5_prob)}
+        ${probBar("Over 3.5", c.finalProbabilities.over_3_5_prob)}
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;">
+      <div class="section-title">Correct Score — Top Probabilities</div>
+      <div class="score-grid">
+        ${(c.correctScoreProbabilities || []).map((s) => `
+          <div class="score-cell"><div class="sc">${s.score}</div><div class="pc">${s.probability_pct}%</div></div>
+        `).join("") || '<div class="text-sm faint">Not enough data for a scoreline breakdown.</div>'}
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;">
+      <div class="section-title">More Markets — Corners, Cards, Halves &amp; Handicap</div>
+      <div class="text-sm faint" style="margin-bottom:12px;">
+        Computed with the same Poisson-style statistical approach as goals, from corners/cards/shots stats collected during retrieval — not asked of the AI models, since a language model has no real grounding to guess a corner count the way it can reason about goals.
+      </div>
+      ${auxiliaryMarketsGrid(c)}
+    </div>
+
+    ${topScorerBlock(data.retrievalData)}
+
+    <div class="grid grid-3" style="margin-bottom:16px;">
+      <div class="card">
+        <div class="section-title">Safe Picks</div>
+        ${(c.safePicks || []).length ? c.safePicks.map(pickRow).join("") : '<div class="text-sm faint">No picks cleared the safe-pick bar this time.</div>'}
+      </div>
+      <div class="card">
+        <div class="section-title">Highest Confidence</div>
+        ${(c.highest_confidence || []).length ? c.highest_confidence.map(pickRow).join("") : '<div class="text-sm faint">None.</div>'}
+      </div>
+      <div class="card">
+        <div class="section-title">Medium / Higher Risk</div>
+        ${[...(c.medium_confidence||[]), ...(c.higher_risk||[])].length ? [...(c.medium_confidence||[]), ...(c.higher_risk||[])].map(pickRow).join("") : '<div class="text-sm faint">None.</div>'}
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;">
+      <div class="section-title">Feature Summary</div>
+      <div class="grid grid-4">
+        ${featureTile("Home Form", f.home_recent_form_score)}
+        ${featureTile("Away Form", f.away_recent_form_score)}
+        ${featureTile("Home Attack", f.home_attack_rating)}
+        ${featureTile("Away Attack", f.away_attack_rating)}
+        ${featureTile("Home Defence", f.home_defence_rating)}
+        ${featureTile("Away Defence", f.away_defence_rating)}
+        ${featureTile("Momentum", f.momentum_score, "")}
+        ${featureTile("Goal Volatility", f.goal_volatility, "")}
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;">
+      <div class="section-title">Model Weighting Used For This Prediction</div>
+      <div class="grid grid-auto">
+        ${Object.entries(c.weightsUsed).map(([name, w]) => `
+          <div class="card" style="background:var(--bg-elev-2);">
+            <div style="display:flex; justify-content:space-between;"><strong>${name}</strong><span class="mono gold">${(w*100).toFixed(1)}%</span></div>
+            <div class="progress-bar" style="margin-top:8px;"><div style="width:${w*100}%"></div></div>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="section-title">Individual Model Outputs</div>
+      <div class="tabs" id="modelTabs">
+        ${modelBlocks.filter(m => m.data).map((m, i) => `<div class="tab ${i===0?'active':''}" data-tab="${m.key}">${m.label}</div>`).join("")}
+      </div>
+      <div id="modelTabContents">
+        ${modelBlocks.filter(m => m.data).map((m, i) => modelDetailBlock(m, i === 0)).join("")}
+      </div>
+      ${modelBlocks.filter(m => !m.data).length ? `<div class="text-sm faint" style="margin-top:14px;">Not shown (excluded this run): ${modelBlocks.filter(m=>!m.data).map(m=>m.label).join(", ")}</div>` : ""}
+    </div>
+  `;
+
+  renderDial(document.getElementById("confDial"), c.overallConfidence, { label: "CONFIDENCE" });
+
+  document.querySelectorAll("#modelTabs .tab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      document.querySelectorAll("#modelTabs .tab").forEach((t) => t.classList.remove("active"));
+      tab.classList.add("active");
+      document.querySelectorAll(".model-tab-content").forEach((c) => c.classList.remove("active"));
+      document.getElementById("tabcontent-" + tab.dataset.tab).classList.add("active");
+    });
+  });
+}
+
+function bestPickBlock(bp) {
+  if (!bp.available) return `<div class="text-sm faint">${escapeHTML(bp.message)}</div>`;
+  return `
+    <div style="font-family:var(--font-display); font-size:24px; color:var(--gold);">${bp.selection}</div>
+    <div class="text-sm muted" style="margin-top:2px;">${bp.market}</div>
+    <div style="display:flex; gap:10px; margin-top:12px;">
+      <span class="badge gold">${bp.probability_pct}% probability</span>
+      ${typeof bp.agreement === "number" ? `<span class="badge teal">${bp.agreement}% agreement</span>` : ""}
+    </div>
+  `;
+}
+
+function diagnosticsBlock(d) {
+  if (!d) return `<div class="text-sm faint">No diagnostics available for this prediction.</div>`;
+  const notes = d.featureNotes || [];
+  const divergence = d.modelDivergenceFromConsensus || {};
+  const entries = Object.entries(divergence).sort((a,b) => b[1]-a[1]);
+  return `
+    <div class="grid grid-2">
+      <div>
+        <div class="text-sm faint" style="margin-bottom:8px;">What drove this prediction</div>
+        ${notes.length ? `<ul style="padding-left:18px; line-height:1.9;" class="text-sm">${notes.map(n => `<li>${escapeHTML(n)}</li>`).join("")}</ul>` : '<div class="text-sm faint">No notable feature signals crossed the threshold for this fixture — a fairly "textbook" case.</div>'}
+        ${d.repairs?.length ? `<div class="text-sm faint" style="margin-top:10px;">${d.repairs.length} field(s) were auto-repaired during validation (implausible values nulled rather than guessed).</div>` : ""}
+      </div>
+      <div>
+        <div class="text-sm faint" style="margin-bottom:8px;">Model divergence from consensus (Match Winner)</div>
+        ${entries.length ? entries.map(([name, val]) => `
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <span class="text-sm">${name}${name === d.mostDivergentModel ? ' <span class="badge gold">most divergent</span>' : ''}</span>
+            <span class="mono text-sm">±${val} pts</span>
+          </div>
+        `).join("") : '<div class="text-sm faint">Not enough models to compare.</div>'}
+        ${typeof d.sourceReliability === "number" ? `<div class="text-sm faint" style="margin-top:10px;">Average retrieval source reliability: <strong class="mono">${d.sourceReliability}/100</strong></div>` : ""}
+      </div>
+    </div>
+  `;
+}
+
+function probBar(label, value) {
+  return `
+    <div class="prob-bar-row">
+      <div class="lbl">${label}</div>
+      <div class="prob-bar-track"><div class="prob-bar-fill" style="width:${value ?? 0}%"></div></div>
+      <div class="prob-bar-val">${fmtPct(value)}</div>
+    </div>
+  `;
+}
+
+function doubleChanceRow(c) {
+  const p = c.finalProbabilities;
+  if (typeof p.double_chance_home_or_draw !== "number") return '<div class="text-sm faint">Not available.</div>';
+  return `
+    <div class="grid grid-3" style="margin-top:8px;">
+      <div class="text-sm"><span class="faint">1X (Home or Draw)</span><br><strong class="mono">${fmtPct(p.double_chance_home_or_draw)}</strong></div>
+      <div class="text-sm"><span class="faint">X2 (Draw or Away)</span><br><strong class="mono">${fmtPct(p.double_chance_draw_or_away)}</strong></div>
+      <div class="text-sm"><span class="faint">12 (Home or Away)</span><br><strong class="mono">${fmtPct(p.double_chance_home_or_away)}</strong></div>
+    </div>
+  `;
+}
+
+const AUX_FAMILIES = new Set(["Corners", "Cards", "Shots on Target", "Half-Time Result", "Win Both Halves", "Win Either Half", "Winning Margin", "Handicap"]);
+
+function auxiliaryMarketsGrid(c) {
+  const all = [...(c.highest_confidence||[]), ...(c.medium_confidence||[]), ...(c.higher_risk||[])];
+  const aux = all.filter((p) => AUX_FAMILIES.has(p.marketFamily));
+  if (!aux.length) return '<div class="text-sm faint">Not enough corners/cards/shots data was retrieved for this fixture to compute these markets.</div>';
+  return `
+    <div class="grid grid-4">
+      ${aux.map((p) => `
+        <div class="card" style="background:var(--bg-elev-2); padding:14px;">
+          <div class="text-sm faint" style="margin-bottom:4px;">${p.market}</div>
+          <div style="font-family:var(--font-display); font-size:16px; color:var(--gold);">${p.selection}</div>
+          <div class="mono text-sm" style="margin-top:4px;">${p.probability_pct}%</div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function topScorerBlock(retrievalData) {
+  const home = retrievalData?.home_top_scorer;
+  const away = retrievalData?.away_top_scorer;
+  if (!home?.name && !away?.name) return "";
+  return `
+    <div class="card" style="margin-bottom:16px;">
+      <div class="section-title">Top Scorers <span class="badge" style="margin-left:8px;">Informational only</span></div>
+      <div class="text-sm faint" style="margin-bottom:12px;">Not turned into a probability market — there's no reliable way to grade an individual goalscorer prediction against just a final scoreline.</div>
+      <div class="grid grid-2">
+        <div class="text-sm">${home?.name ? `<strong>${escapeHTML(home.name)}</strong> — ${home.goals ?? "?"} goals` : "No data"}</div>
+        <div class="text-sm">${away?.name ? `<strong>${escapeHTML(away.name)}</strong> — ${away.goals ?? "?"} goals` : "No data"}</div>
+      </div>
+    </div>
+  `;
+}
+
+function pickRow(p) {
+  return `
+    <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--line-soft);">
+      <div>
+        <div class="text-sm">${p.market}</div>
+        <div class="text-sm gold" style="font-weight:600;">${p.selection}</div>
+      </div>
+      <div style="text-align:right;">
+        <div class="mono">${p.probability_pct}%</div>
+        ${typeof p.agreement === "number" ? `<div class="text-sm faint">${p.agreement}% agree</div>` : ""}
+      </div>
+    </div>
+  `;
+}
+
+function featureTile(label, value, suffix = "") {
+  return `
+    <div class="card" style="background:var(--bg-elev-2); padding:14px;">
+      <div class="stat-label">${label}</div>
+      <div class="stat-value" style="font-size:20px; margin-top:4px;">${value === null || value === undefined ? "—" : value + suffix}</div>
+    </div>
+  `;
+}
+
+function modelDetailBlock(m, active) {
+  const d = m.data;
+  return `
+    <div class="model-tab-content ${active ? 'active' : ''}" id="tabcontent-${m.key}" style="padding-top:16px;">
+      <div class="grid grid-3">
+        <div class="kv-list">
+          <div class="kv-row"><span class="k">Home Win</span><span class="v">${fmtPct(d.home_win_prob)}</span></div>
+          <div class="kv-row"><span class="k">Draw</span><span class="v">${fmtPct(d.draw_prob)}</span></div>
+          <div class="kv-row"><span class="k">Away Win</span><span class="v">${fmtPct(d.away_win_prob)}</span></div>
+          <div class="kv-row"><span class="k">BTTS</span><span class="v">${fmtPct(d.btts_prob)}</span></div>
+        </div>
+        <div class="kv-list">
+          <div class="kv-row"><span class="k">Over 1.5</span><span class="v">${fmtPct(d.over_under?.o15?.over_pct)}</span></div>
+          <div class="kv-row"><span class="k">Over 2.5</span><span class="v">${fmtPct(d.over_under?.o25?.over_pct)}</span></div>
+          <div class="kv-row"><span class="k">Over 3.5</span><span class="v">${fmtPct(d.over_under?.o35?.over_pct)}</span></div>
+          <div class="kv-row"><span class="k">Confidence</span><span class="v">${fmtPct(d.confidence)}</span></div>
+        </div>
+        <div>
+          <div class="text-sm faint" style="margin-bottom:6px;">Likely scorelines</div>
+          <div class="chip-row">${(d.likely_scorelines||[]).map(s => `<span class="chip">${s}</span>`).join("")}</div>
+        </div>
+      </div>
+      ${d.key_stats_used?.length ? `<div style="margin-top:14px;"><div class="text-sm faint" style="margin-bottom:6px;">Key stats used</div><div class="chip-row">${d.key_stats_used.map(s=>`<span class="chip">${escapeHTML(s)}</span>`).join("")}</div></div>` : ""}
+      ${d.weaknesses?.length ? `<div style="margin-top:10px;"><div class="text-sm faint" style="margin-bottom:6px;">Weaknesses noted</div><div class="chip-row">${d.weaknesses.map(s=>`<span class="chip">${escapeHTML(s)}</span>`).join("")}</div></div>` : ""}
+      ${d.missing_data_impact ? `<div class="text-sm faint" style="margin-top:10px;">Missing-data impact: ${escapeHTML(d.missing_data_impact)}</div>` : ""}
+    </div>
+  `;
+}
+
+// If arriving from History with ?id=..., load that stored prediction directly.
+const params = new URLSearchParams(location.search);
+if (params.get("id")) {
+  api(`/api/history/${params.get("id")}`).then((record) => {
+    document.getElementById("homeInput").value = record.fixture.home;
+    document.getElementById("awayInput").value = record.fixture.away;
+    document.getElementById("leagueInput").value = record.fixture.league;
+    document.getElementById("dateInput").value = record.fixture.date;
+    renderResults({ ...record, _cached: true });
+  }).catch(() => toast("Could not load that prediction", "error"));
+}
+</script>
+</body>
+</html>

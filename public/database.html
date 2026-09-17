@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Database — Full-Time</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<script src="/assets/app.js"></script>
+<script>
+injectShell("Database Management", "Storage health and maintenance for your local prediction data");
+
+const content = document.getElementById("pageContent");
+content.innerHTML = `
+  <div class="grid grid-4 animate-in" id="dbStats" style="margin-bottom:16px;"></div>
+
+  <div class="grid grid-2" style="margin-bottom:16px;">
+    <div>
+      <div class="section-title">Storage (MongoDB Collections)</div>
+      <div class="card" id="filesCard"><div class="skeleton" style="height:140px;"></div></div>
+    </div>
+    <div>
+      <div class="section-title">Top Competitions</div>
+      <div class="card" id="compsCard"><div class="skeleton" style="height:140px;"></div></div>
+    </div>
+  </div>
+
+  <div class="section-title">Maintenance</div>
+  <div class="card" style="margin-bottom:16px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+      <div>
+        <div style="font-weight:600; font-size:13.5px;">Recompute all model weights</div>
+        <div class="text-sm faint">Replays your entire graded history from scratch under current settings. Runs automatically on every feedback submission and server start — use this if you've just changed Weight Learning settings and want them applied immediately.</div>
+      </div>
+      <button class="btn" id="recomputeBtn">Recompute Now</button>
+    </div>
+  </div>
+
+  <div class="section-title" style="color:var(--risk);">Danger Zone</div>
+  <div class="card" style="border-color:var(--risk-dim);">
+    <div style="font-weight:600; font-size:13.5px; color:var(--risk);">Clear all prediction data</div>
+    <div class="text-sm faint" style="margin:6px 0 12px;">Permanently deletes every stored prediction, resets model weights to equal, and cannot be undone. Back up first from the Backup &amp; Restore page.</div>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <input type="text" id="confirmPhrase" placeholder='Type "DELETE ALL DATA" to confirm' style="max-width:280px;">
+      <button class="btn danger" id="clearBtn">Delete Everything</button>
+    </div>
+  </div>
+`;
+
+async function load() {
+  try {
+    const info = await api("/api/database/info");
+    document.getElementById("dbStats").innerHTML = `
+      <div class="card stat-card"><div class="stat-label">Total Records</div><div class="stat-value">${info.recordCount}</div></div>
+      <div class="card stat-card"><div class="stat-label">Graded</div><div class="stat-value teal">${info.gradedCount}</div></div>
+      <div class="card stat-card"><div class="stat-label">Pending</div><div class="stat-value">${info.pendingCount}</div></div>
+      <div class="card stat-card"><div class="stat-label">Competitions</div><div class="stat-value gold">${info.competitionCount}</div></div>
+    `;
+    document.getElementById("filesCard").innerHTML = `
+      <table>
+        <thead><tr><th>Collection</th><th>Documents</th></tr></thead>
+        <tbody>${info.collections.map(c => `<tr><td class="mono">${escapeHTML(c.name)}</td><td>${c.count}</td></tr>`).join("")}</tbody>
+      </table>
+    `;
+    document.getElementById("compsCard").innerHTML = info.topCompetitions.length ? `
+      <table>
+        <thead><tr><th>Competition</th><th>Count</th></tr></thead>
+        <tbody>${info.topCompetitions.map(c => `<tr><td>${escapeHTML(c.league)}</td><td class="mono">${c.count}</td></tr>`).join("")}</tbody>
+      </table>
+    ` : `<div class="empty-state">No predictions yet.</div>`;
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+document.getElementById("recomputeBtn").addEventListener("click", async () => {
+  try {
+    await api("/api/database/recompute-weights", { method: "POST" });
+    toast("Weights recomputed from full history", "success");
+  } catch (err) { toast(err.message, "error"); }
+});
+
+document.getElementById("clearBtn").addEventListener("click", async () => {
+  const phrase = document.getElementById("confirmPhrase").value;
+  if (phrase !== "DELETE ALL DATA") { toast('Type the exact phrase "DELETE ALL DATA" to confirm', "error"); return; }
+  if (!confirm("This permanently deletes ALL prediction history. Are you absolutely sure?")) return;
+  try {
+    await api("/api/database/clear", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ confirm: phrase }) });
+    toast("All data cleared", "success");
+    load();
+  } catch (err) { toast(err.message, "error"); }
+});
+
+load();
+</script>
+</body>
+</html>

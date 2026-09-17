@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Backup & Restore — Full-Time</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/style.css">
+<style>
+  .dropzone { border: 2px dashed var(--line); border-radius: var(--radius); padding: 34px; text-align: center; transition: border-color 0.2s, background 0.2s; cursor: pointer; }
+  .dropzone.drag { border-color: var(--gold); background: var(--gold-glow); }
+</style>
+</head>
+<body>
+<script src="/assets/app.js"></script>
+<script>
+injectShell("Backup & Restore", "Protect your prediction history and model learning against data loss");
+
+const content = document.getElementById("pageContent");
+content.innerHTML = `
+  <div class="grid grid-2">
+    <div class="card animate-in">
+      <div class="section-title">Download Backup</div>
+      <p class="text-sm muted" style="line-height:1.7; margin-bottom:16px;">
+        Exports every stored prediction, learned model weights, cache statistics, and current settings as one JSON file.
+        This is your defense against data loss from an accidental "Clear Data", a MongoDB account or cluster problem,
+        or migrating to a different database — download one regularly, especially before clearing the database.
+      </p>
+      <button class="btn primary" id="downloadBtn">Download Backup (.json)</button>
+    </div>
+    <div class="card">
+      <div class="section-title">Restore From Backup</div>
+      <p class="text-sm muted" style="line-height:1.7; margin-bottom:16px;">
+        Restoring completely replaces your current prediction history, model weights, and cache stats with the contents
+        of the uploaded file. This cannot be undone — download a fresh backup of your current state first if unsure.
+      </p>
+      <div class="dropzone" id="dropzone">
+        <div class="text-sm muted">Drop a backup .json file here, or click to choose one</div>
+        <input type="file" id="fileInput" accept="application/json" style="display:none;">
+      </div>
+      <div id="restorePreview" style="margin-top:14px;"></div>
+    </div>
+  </div>
+`;
+
+document.getElementById("downloadBtn").addEventListener("click", () => {
+  window.location.href = "/api/backup";
+  toast("Backup download started", "success");
+});
+
+const dropzone = document.getElementById("dropzone");
+const fileInput = document.getElementById("fileInput");
+dropzone.addEventListener("click", () => fileInput.click());
+["dragover","dragenter"].forEach(evt => dropzone.addEventListener(evt, (e) => { e.preventDefault(); dropzone.classList.add("drag"); }));
+["dragleave","drop"].forEach(evt => dropzone.addEventListener(evt, (e) => { e.preventDefault(); dropzone.classList.remove("drag"); }));
+dropzone.addEventListener("drop", (e) => { if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
+fileInput.addEventListener("change", () => { if (fileInput.files[0]) handleFile(fileInput.files[0]); });
+
+let pendingBackup = null;
+
+function handleFile(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      pendingBackup = JSON.parse(reader.result);
+      const count = Array.isArray(pendingBackup.predictions) ? pendingBackup.predictions.length : 0;
+      document.getElementById("restorePreview").innerHTML = `
+        <div class="card" style="background:var(--bg-elev-2);">
+          <div class="text-sm">File contains <strong class="gold">${count}</strong> prediction${count === 1 ? "" : "s"}${pendingBackup.exportedAt ? `, exported ${fmtDateTime(pendingBackup.exportedAt)}` : ""}.</div>
+          <button class="btn danger sm" style="margin-top:12px;" id="confirmRestoreBtn">Restore This Backup</button>
+        </div>
+      `;
+      document.getElementById("confirmRestoreBtn").addEventListener("click", doRestore);
+    } catch {
+      toast("That doesn't look like a valid JSON backup file", "error");
+    }
+  };
+  reader.readAsText(file);
+}
+
+async function doRestore() {
+  if (!pendingBackup) return;
+  if (!confirm("This will replace ALL current data. Continue?")) return;
+  try {
+    const res = await api("/api/restore", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(pendingBackup) });
+    toast(`Restored ${res.restored} predictions`, "success");
+    document.getElementById("restorePreview").innerHTML = "";
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+</script>
+</body>
+</html>

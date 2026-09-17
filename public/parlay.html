@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Parlay Builder — Full-Time</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/style.css">
+<style>
+  .parlay-tier-card { display: flex; flex-direction: column; height: 100%; }
+  .parlay-odds { font-family: var(--font-display); font-size: 40px; color: var(--gold); line-height: 1; }
+  .parlay-leg { display: flex; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line-soft); font-size: 12.5px; }
+  .parlay-leg:last-child { border-bottom: none; }
+  .manual-pick-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line-soft); }
+  .manual-pick-row:last-child { border-bottom: none; }
+  .manual-pick-row input[type=checkbox] { margin-top: 3px; width: 16px; height: 16px; accent-color: var(--gold); }
+</style>
+</head>
+<body>
+<script src="/assets/app.js"></script>
+<script>
+injectShell("Parlay Builder", "Combine independent predictions into a single parlay");
+
+const content = document.getElementById("pageContent");
+content.innerHTML = `
+  <div class="tabs" id="parlayTabs">
+    <div class="tab active" data-tab="auto">Auto-Build</div>
+    <div class="tab" data-tab="manual">Manual Build</div>
+  </div>
+  <div id="autoPane"></div>
+  <div id="manualPane" style="display:none;"></div>
+`;
+
+document.querySelectorAll("#parlayTabs .tab").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll("#parlayTabs .tab").forEach((t) => t.classList.remove("active"));
+    tab.classList.add("active");
+    const isAuto = tab.dataset.tab === "auto";
+    document.getElementById("autoPane").style.display = isAuto ? "" : "none";
+    document.getElementById("manualPane").style.display = isAuto ? "none" : "";
+    if (!isAuto) loadManual();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Auto-Build
+// ---------------------------------------------------------------------------
+
+const TIER_META = {
+  safest: { label: "Safest", color: "win" },
+  safe: { label: "Safe (More Legs)", color: "gold" },
+  longshot: { label: "Longshot", color: "risk" },
+};
+
+async function loadAuto() {
+  const pane = document.getElementById("autoPane");
+  pane.innerHTML = `<div class="skeleton" style="height:280px;"></div>`;
+  try {
+    const result = await api("/api/parlay/auto");
+    if (!result.available) {
+      pane.innerHTML = `<div class="empty-state">${escapeHTML(result.message)}</div>`;
+      return;
+    }
+    const tierKeys = Object.keys(result.tiers);
+    if (!tierKeys.length) {
+      pane.innerHTML = `<div class="empty-state">No parlay tiers could be built from the current pending predictions.</div>`;
+      return;
+    }
+    pane.innerHTML = `
+      <div class="text-sm muted" style="margin-bottom:16px;">${result.poolSize} eligible pick${result.poolSize === 1 ? "" : "s"} available across your pending predictions.</div>
+      <div class="grid grid-auto">
+        ${tierKeys.map((key) => tierCardHTML(key, result.tiers[key])).join("")}
+      </div>
+    `;
+  } catch (err) {
+    pane.innerHTML = `<div class="empty-state">Failed to build parlays: ${escapeHTML(err.message)}</div>`;
+  }
+}
+
+function tierCardHTML(key, parlay, { showBadge = true } = {}) {
+  const meta = TIER_META[key] || { label: key, color: "" };
+  return `
+    <div class="card parlay-tier-card">
+      <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px;">
+        ${showBadge ? `<span class="badge ${meta.color}">${meta.label}</span>` : "<span></span>"}
+        <span class="text-sm faint">${parlay.legCount} legs</span>
+      </div>
+      <div class="parlay-odds">${parlay.decimalOdds != null ? parlay.decimalOdds.toFixed(2) : "—"}<span class="text-sm faint" style="font-family:var(--font-body);"> decimal odds</span></div>
+      <div class="text-sm muted" style="margin:6px 0 14px;">${parlay.combinedProbabilityPct}% combined probability · ${parlay.avgAgreement}% avg. agreement</div>
+      <div style="flex:1;">
+        ${parlay.legs.map((leg) => `
+          <div class="parlay-leg">
+            <span>${escapeHTML(leg.fixture.home)} vs ${escapeHTML(leg.fixture.away)}<br><span class="text-sm faint">${escapeHTML(leg.market)}: <strong>${escapeHTML(leg.selection)}</strong></span></span>
+            <span class="mono">${leg.probability_pct}%</span>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+// ---------------------------------------------------------------------------
+// Manual Build
+// ---------------------------------------------------------------------------
+
+let pendingPredictions = [];
+const selectedIds = new Set();
+let manualLoaded = false;
+
+async function loadManual() {
+  if (manualLoaded) return;
+  manualLoaded = true;
+  const pane = document.getElementById("manualPane");
+  pane.innerHTML = `<div class="skeleton" style="height:280px;"></div>`;
+  try {
+    const res = await api("/api/history?status=pending&sort=newest");
+    pendingPredictions = res.predictions;
+    renderManual();
+  } catch (err) {
+    pane.innerHTML = `<div class="empty-state">Failed to load pending predictions: ${escapeHTML(err.message)}</div>`;
+  }
+}
+
+function renderManual() {
+  const pane = document.getElementById("manualPane");
+  if (!pendingPredictions.length) {
+    pane.innerHTML = `<div class="empty-state">No pending predictions to build a parlay from yet. Run some analyses first.</div>`;
+    return;
+  }
+  pane.innerHTML = `
+    <div class="grid grid-2">
+      <div>
+        <div class="section-title" style="margin-top:0;">Select Predictions</div>
+        <div class="card">
+          ${pendingPredictions.map((p) => {
+            const bp = p.consensus?.bestPick;
+            return `
+              <div class="manual-pick-row">
+                <input type="checkbox" id="chk-${p.id}" ${selectedIds.has(p.id) ? "checked" : ""} onchange="toggleLeg('${p.id}', this.checked)">
+                <label for="chk-${p.id}" style="cursor:pointer; flex:1;">
+                  <div>${escapeHTML(p.fixture.home)} vs ${escapeHTML(p.fixture.away)}</div>
+                  <div class="text-sm faint">${escapeHTML(p.fixture.league)} · ${escapeHTML(p.fixture.date)}</div>
+                  ${bp?.available ? `<span class="badge gold" style="margin-top:4px;">${escapeHTML(bp.market)}: ${escapeHTML(bp.selection)} (${bp.probability_pct}%)</span>` : `<span class="text-sm faint">No Best Pick available</span>`}
+                </label>
+              </div>
+            `;
+          }).join("")}
+        </div>
+      </div>
+      <div>
+        <div class="section-title" style="margin-top:0;">Combined Parlay</div>
+        <div class="card" id="manualResult"><div class="empty-state text-sm">Select at least 2 predictions to combine.</div></div>
+      </div>
+    </div>
+  `;
+}
+
+async function toggleLeg(id, checked) {
+  if (checked) selectedIds.add(id);
+  else selectedIds.delete(id);
+  await updateManualResult();
+}
+
+async function updateManualResult() {
+  const el = document.getElementById("manualResult");
+  if (selectedIds.size < 2) {
+    el.innerHTML = `<div class="empty-state text-sm">Select at least 2 predictions to combine.</div>`;
+    return;
+  }
+  el.innerHTML = `<div class="skeleton" style="height:160px;"></div>`;
+  try {
+    const legs = [...selectedIds].map((id) => ({ predictionId: id }));
+    const res = await api("/api/parlay/combine", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ legs }) });
+    el.innerHTML = tierCardHTML("manual", res.parlay, { showBadge: false });
+  } catch (err) {
+    el.innerHTML = `<div class="empty-state">${escapeHTML(err.message)}</div>`;
+  }
+}
+
+loadAuto();
+</script>
+</body>
+</html>

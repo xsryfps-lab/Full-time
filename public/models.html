@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Model Performance — Full-Time</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<script src="/assets/app.js"></script>
+<script>
+injectShell("Model Performance", "Deep dive into each individual model's track record");
+
+const MODELS = [
+  { key: "cohere", label: "Cohere", desc: "Command-A class LLM via Cohere's v2 Chat API, free trial key." },
+  { key: "gemini", label: "Gemini", desc: "Gemini 2.0 Flash with native JSON-mode structured output. Also performs the retrieval-extraction step." },
+  { key: "exa", label: "Exa", desc: "The only voice with real-time internet access — does its own live web search per fixture instead of reasoning from the shared dataset." },
+  { key: "poisson", label: "Poisson (Statistical)", desc: "Deterministic Poisson + Dixon-Coles goal model — zero API cost, zero latency, not an AI." },
+];
+
+const content = document.getElementById("pageContent");
+content.innerHTML = `
+  <div class="tabs" id="modelTabs">
+    ${MODELS.map((m,i) => `<div class="tab" data-key="${m.key}">${m.label}</div>`).join("")}
+  </div>
+  <div id="modelDetail"><div class="skeleton" style="height:320px;"></div></div>
+`;
+
+const params = new URLSearchParams(location.search);
+let activeKey = params.get("model") || "cohere";
+
+document.querySelectorAll("#modelTabs .tab").forEach((tab) => {
+  if (tab.dataset.key === activeKey) tab.classList.add("active");
+  tab.addEventListener("click", () => {
+    document.querySelectorAll("#modelTabs .tab").forEach(t => t.classList.remove("active"));
+    tab.classList.add("active");
+    activeKey = tab.dataset.key;
+    history.replaceState(null, "", `?model=${activeKey}`);
+    loadModel(activeKey);
+  });
+});
+
+async function loadModel(key) {
+  const el = document.getElementById("modelDetail");
+  el.innerHTML = `<div class="skeleton" style="height:320px;"></div>`;
+  const meta = MODELS.find(m => m.key === key);
+  try {
+    const stats = await api(`/api/model-stats/${key}`);
+    el.innerHTML = `
+      <div class="card animate-in" style="margin-bottom:16px;">
+        <div class="eyebrow">${meta.label}</div>
+        <div class="text-sm muted" style="margin-top:4px;">${meta.desc}</div>
+      </div>
+
+      <div class="grid" style="grid-template-columns: 0.8fr 1.2fr 1fr; margin-bottom:16px;">
+        <div class="card" style="display:flex; align-items:center; justify-content:center;"><div id="modelDial"></div></div>
+        <div class="card">
+          <div class="section-title">Accuracy Windows</div>
+          <div class="grid grid-4">
+            ${windowTile("Last 10", stats.last10)}
+            ${windowTile("Last 25", stats.last25)}
+            ${windowTile("Last 50", stats.last50)}
+            ${windowTile("Last 100", stats.last100)}
+          </div>
+        </div>
+        <div class="card">
+          <div class="kv-list">
+            <div class="kv-row"><span class="k">Graded instances</span><span class="v">${stats.gradedCount}</span></div>
+            <div class="kv-row"><span class="k">Current streak</span><span class="v">${stats.currentStreak}</span></div>
+            <div class="kv-row"><span class="k">Trend</span><span class="v">${stats.trend}</span></div>
+            <div class="kv-row"><span class="k">Avg. stated confidence</span><span class="v">${fmtPct(stats.avgConfidence)}</span></div>
+            <div class="kv-row"><span class="k">High-confidence accuracy</span><span class="v">${fmtPct(stats.highConfidenceAccuracy)}</span></div>
+            <div class="kv-row"><span class="k">Brier score</span><span class="v">${stats.brierScore ?? "—"}</span></div>
+          </div>
+        </div>
+      </div>
+
+      ${stats.strongestMarket || stats.weakestMarket ? `
+      <div class="grid grid-2" style="margin-bottom:16px;">
+        ${stats.strongestMarket ? `<div class="card" style="border-left:3px solid var(--win);"><div class="text-sm faint">Strongest market</div><div style="font-family:var(--font-display); font-size:16px; margin-top:4px;">${stats.strongestMarket.market}</div><span class="badge win" style="margin-top:6px;">${fmtPct(stats.strongestMarket.accuracy)} over ${stats.strongestMarket.count} picks</span></div>` : '<div></div>'}
+        ${stats.weakestMarket ? `<div class="card" style="border-left:3px solid var(--risk);"><div class="text-sm faint">Weakest market</div><div style="font-family:var(--font-display); font-size:16px; margin-top:4px;">${stats.weakestMarket.market}</div><span class="badge risk" style="margin-top:6px;">${fmtPct(stats.weakestMarket.accuracy)} over ${stats.weakestMarket.count} picks</span></div>` : '<div></div>'}
+      </div>` : ""}
+
+      <div class="section-title">Accuracy By Market</div>
+      <div class="card">
+        ${Object.keys(stats.byMarket).length ? `
+        <table>
+          <thead><tr><th>Market</th><th>Graded</th><th>Accuracy</th></tr></thead>
+          <tbody>${Object.entries(stats.byMarket).map(([market, info]) => `
+            <tr><td>${market}</td><td class="mono">${info.count}</td><td>${fmtPct(info.accuracy)}</td></tr>
+          `).join("")}</tbody>
+        </table>` : `<div class="empty-state">No graded predictions yet for ${meta.label}.</div>`}
+      </div>
+    `;
+    renderDial(document.getElementById("modelDial"), stats.calibrationScore, { label: "CALIBRATION SCORE", colorFrom: "#34d1b6", colorTo: "#e8b34d" });
+  } catch (err) {
+    el.innerHTML = `<div class="empty-state">Failed to load: ${escapeHTML(err.message)}</div>`;
+  }
+}
+
+function windowTile(label, value) {
+  return `<div class="card" style="background:var(--bg-elev-2); padding:12px;"><div class="stat-label">${label}</div><div class="stat-value" style="font-size:20px;">${fmtPct(value)}</div></div>`;
+}
+
+loadModel(activeKey);
+</script>
+</body>
+</html>
